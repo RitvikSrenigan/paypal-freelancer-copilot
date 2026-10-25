@@ -26,6 +26,7 @@ type Invoice = {
   dueDate: string;
   status: 'Unpaid' | 'Paid';
   paypalOrderId?: string;
+  archived?: boolean;
 };
 
 const paypalClientId = process.env.PAYPAL_CLIENT_ID;
@@ -82,6 +83,29 @@ app.get('/api/invoices', async (_req, res) => {
   }
 });
 
+app.get('/api/public/invoices/:id', async (req, res) => {
+  try {
+    const invoices = await readInvoices();
+    const invoice = invoices.find((item) => item.id === req.params.id);
+
+    if (!invoice) {
+      res.status(404).json({ error: 'Invoice not found.' });
+      return;
+    }
+
+    res.json({
+      id: invoice.id,
+      client: invoice.client,
+      description: invoice.description,
+      amount: invoice.amount,
+      dueDate: invoice.dueDate,
+      status: invoice.status,
+    });
+  } catch {
+    res.status(500).json({ error: 'Could not load invoice.' });
+  }
+});
+
 app.post('/api/invoices', async (req, res) => {
   const { client, description, amount, dueDate } = req.body ?? {};
 
@@ -120,7 +144,29 @@ app.post('/api/invoices', async (req, res) => {
   }
 });
 
-// The client ID is public. The PayPal secret stays on the backend.
+app.patch('/api/invoices/:id/archive', async (req, res) => {
+  try {
+    const invoices = await readInvoices();
+    const invoice = invoices.find((item) => item.id === req.params.id);
+
+    if (!invoice) {
+      res.status(404).json({ error: 'Invoice not found.' });
+      return;
+    }
+
+    if (invoice.status !== 'Paid') {
+      res.status(409).json({ error: 'Only paid invoices can be cleared.' });
+      return;
+    }
+
+    invoice.archived = true;
+    await saveInvoices(invoices);
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: 'Could not clear the invoice.' });
+  }
+});
+
 app.get('/api/paypal/client-id', (_req, res) => {
   if (!paypalClientId) {
     res.status(503).json({ error: 'PayPal Sandbox is not configured.' });
@@ -130,7 +176,6 @@ app.get('/api/paypal/client-id', (_req, res) => {
   res.json({ clientId: paypalClientId });
 });
 
-// Create the PayPal order using the invoice amount saved on the backend.
 app.post('/api/paypal/orders', async (req, res) => {
   if (!ordersController) {
     res.status(503).json({ error: 'PayPal Sandbox is not configured.' });
@@ -184,7 +229,6 @@ app.post('/api/paypal/orders', async (req, res) => {
 
     invoice.paypalOrderId = paypalOrder.id;
     await saveInvoices(invoices);
-
     res.status(201).json({ id: paypalOrder.id });
   } catch {
     console.error('PayPal could not create an order.');
@@ -192,7 +236,6 @@ app.post('/api/paypal/orders', async (req, res) => {
   }
 });
 
-// Capture the approved order and mark its invoice paid only when capture completes.
 app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
   if (!ordersController) {
     res.status(503).json({ error: 'PayPal Sandbox is not configured.' });

@@ -336,9 +336,138 @@ td {
   font-weight: 700;
 }
 
-.client-name {
+.client-page {
+  min-height: 100vh;
+  padding: 48px 20px;
+  background:
+    radial-gradient(ellipse at top left, #eee9ff 0%, transparent 45%),
+    #f7f7fb;
+}
+
+.client-brand {
+  display: block;
+  max-width: 620px;
+  margin: 0 auto 24px;
+  color: #29243b;
+  font: 700 16px Manrope, sans-serif;
+  text-decoration: none;
+}
+
+.client-invoice-card {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 36px;
+  border: 1px solid #eceaf2;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 18px 55px #29243b12;
+}
+
+.client-invoice-card .eyebrow {
+  display: inline-block;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  border-radius: 20px;
+  background: #f2efff;
+  color: #674bd2;
+}
+
+.client-invoice-card h1,
+.client-page h1 {
+  margin: 0 0 8px;
+  color: #28243a;
+  font: 700 25px Manrope, sans-serif;
+  letter-spacing: -0.5px;
+}
+
+.client-description {
+  margin: 0;
+  color: #858091;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.client-invoice-details {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 15px;
+  margin: 26px 0;
+  padding: 20px;
+  border: 1px solid #eeedf3;
+  border-radius: 12px;
+  background: #fbfaff;
+  font-size: 12px;
+}
+
+.client-invoice-details span {
+  color: #898495;
+}
+
+.client-invoice-details strong {
   color: #464154;
-  font-weight: 600;
+  text-align: right;
+}
+
+.client-invoice-details .client-amount {
+  color: #302c40;
+  font: 700 20px Manrope, sans-serif;
+}
+
+.client-pay-area {
+  padding: 18px;
+  border: 1px solid #eae6fb;
+  border-radius: 12px;
+  background: #f8f6ff;
+}
+
+.client-pay-area > p {
+  margin: 0 0 14px;
+  color: #625b75;
+  font-size: 12px;
+  text-align: center;
+}
+
+.client-pay-area .paypal-button {
+  width: min(100%, 320px);
+  margin: 0 auto;
+}
+
+.client-paid-message {
+  margin: 0;
+  padding: 15px;
+  border: 1px solid #d9f0e4;
+  border-radius: 10px;
+  background: #effaf4;
+  color: #388d68;
+  font-size: 12px;
+  text-align: center;
+}
+
+.client-page > p {
+  max-width: 620px;
+  margin: 20px auto;
+  color: #858091;
+  font-size: 13px;
+}
+
+@media (max-width: 600px) {
+  .client-page {
+    padding: 28px 14px;
+  }
+
+  .client-invoice-card {
+    padding: 24px 18px;
+    border-radius: 14px;
+  }
+
+  .client-invoice-card h1,
+  .client-page h1 {
+    font-size: 21px;
+  }
+
+  .client-invoice-details {
+    padding: 15px;
+  }
 }
 
 .description {

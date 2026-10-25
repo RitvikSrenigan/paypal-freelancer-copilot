@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import PayPalCheckoutButton from './PayPalCheckoutButton'
+import ClientInvoicePage from './ClientInvoicePage'
 import './App.css'
 
 type Invoice = {
@@ -9,6 +9,7 @@ type Invoice = {
   amount: number
   dueDate: string
   status: 'Unpaid' | 'Paid'
+  archived?: boolean
 }
 
 function formatMoney(amount: number) {
@@ -18,18 +19,28 @@ function formatMoney(amount: number) {
   }).format(amount)
 }
 
+function getLocalDate() {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function App() {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [copiedInvoiceId, setCopiedInvoiceId] = useState('')
 
   const [client, setClient] = useState('')
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [dueDate, setDueDate] = useState('')
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = getLocalDate()
+  const activeInvoices = invoices.filter((invoice) => !invoice.archived)
 
   useEffect(() => {
     async function loadInvoices() {
@@ -50,6 +61,7 @@ function App() {
     loadInvoices()
   }, [])
 
+  // Totals use all invoices, including archived ones, to preserve history.
   const totals = useMemo(() => {
     const unpaidInvoices = invoices.filter(
       (invoice) => invoice.status === 'Unpaid',
@@ -85,7 +97,10 @@ function App() {
       })
 
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Could not save invoice.')
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Could not save invoice.')
+      }
 
       setInvoices((current) => [result as Invoice, ...current])
       setClient('')
@@ -98,29 +113,72 @@ function App() {
     }
   }
 
-  function markInvoicePaid(invoiceId: string) {
-    setInvoices((current) =>
-      current.map((invoice) =>
-        invoice.id === invoiceId ? { ...invoice, status: 'Paid' } : invoice,
-      ),
+  async function copyPaymentLink(invoiceId: string) {
+    const link = `${window.location.origin}/pay/${encodeURIComponent(invoiceId)}`
+
+    try {
+      await navigator.clipboard.writeText(link)
+      setCopiedInvoiceId(invoiceId)
+      setError('')
+      window.setTimeout(() => setCopiedInvoiceId(''), 2500)
+    } catch {
+      setError('Could not copy the link. Check your browser clipboard permissions.')
+    }
+  }
+
+  async function clearPaidInvoice(invoiceId: string) {
+    const confirmed = window.confirm(
+      'Clear this paid invoice from the list? It will remain in your saved records and totals.',
     )
+    if (!confirmed) return
+
+    setError('')
+
+    try {
+      const response = await fetch(
+        `/api/invoices/${encodeURIComponent(invoiceId)}/archive`,
+        { method: 'PATCH' },
+      )
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Could not clear invoice.')
+      }
+
+      setInvoices((current) =>
+        current.map((invoice) =>
+          invoice.id === invoiceId
+            ? { ...invoice, archived: true }
+            : invoice,
+        ),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not clear invoice.')
+    }
+  }
+
+  const paymentPageMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/)
+  const paymentPageId = paymentPageMatch?.[1]
+
+  if (paymentPageId) {
+    return <ClientInvoicePage invoiceId={decodeURIComponent(paymentPageId)} />
   }
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="dashboard">
+        <a className="brand" href="/dashboard">
           <span className="brand-icon">F</span>
           <span>PayPal Freelancer Copilot</span>
         </a>
 
         <p className="sidebar-label">WORKSPACE</p>
-        <a className="nav-link active" href="dashboard">
+        <a className="nav-link active" href="/dashboard">
           <span>▦</span> Overview
         </a>
-        <a className="nav-link" href="invoices">
+        <a className="nav-link" href="/invoices">
           <span>▤</span> Invoices
-          <b>{invoices.length}</b>
+          <b>{activeInvoices.length}</b>
         </a>
 
         <div className="sidebar-note">
@@ -153,7 +211,8 @@ function App() {
         <section className="metrics" aria-label="Invoice summary">
           <article className="metric-card">
             <div className="metric-heading">
-              <span>Total invoiced</span><b className="metric-icon purple">↗</b>
+              <span>Total invoiced</span>
+              <b className="metric-icon purple">↗</b>
             </div>
             <strong>{formatMoney(totals.invoiced)}</strong>
             <small>{invoices.length} invoice{invoices.length === 1 ? '' : 's'}</small>
@@ -161,7 +220,8 @@ function App() {
 
           <article className="metric-card">
             <div className="metric-heading">
-              <span>Received</span><b className="metric-icon green">✓</b>
+              <span>Received</span>
+              <b className="metric-icon green">✓</b>
             </div>
             <strong>{formatMoney(totals.received)}</strong>
             <small>Payments confirmed</small>
@@ -169,7 +229,8 @@ function App() {
 
           <article className="metric-card">
             <div className="metric-heading">
-              <span>Outstanding</span><b className="metric-icon amber">◷</b>
+              <span>Outstanding</span>
+              <b className="metric-icon amber">◷</b>
             </div>
             <strong>{formatMoney(totals.outstanding)}</strong>
             <small>Awaiting payment</small>
@@ -177,7 +238,8 @@ function App() {
 
           <article className="metric-card">
             <div className="metric-heading">
-              <span>Overdue</span><b className="metric-icon red">!</b>
+              <span>Overdue</span>
+              <b className="metric-icon red">!</b>
             </div>
             <strong>
               {totals.overdue}
@@ -199,11 +261,15 @@ function App() {
             <div className="empty-state">
               <p>Loading invoices…</p>
             </div>
-          ) : invoices.length === 0 ? (
+          ) : activeInvoices.length === 0 ? (
             <div className="empty-state">
               <span className="empty-icon">▤</span>
-              <h3>No invoices yet</h3>
-              <p>Create your first invoice using the button below.</p>
+              <h3>{invoices.length === 0 ? 'No invoices yet' : 'All invoices cleared'}</h3>
+              <p>
+                {invoices.length === 0
+                  ? 'Create your first invoice using the button below.'
+                  : 'Cleared paid invoices remain included in your totals.'}
+              </p>
             </div>
           ) : (
             <div className="table-scroll">
@@ -215,11 +281,13 @@ function App() {
                     <th>DESCRIPTION</th>
                     <th>DUE DATE</th>
                     <th>AMOUNT</th>
-                    <th>PAYMENT</th>
+                    <th>STATUS</th>
+                    <th>CLIENT LINK</th>
+                    <th>ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {invoices.map((invoice) => {
+                  {activeInvoices.map((invoice) => {
                     const overdue =
                       invoice.status === 'Unpaid' && invoice.dueDate < today
 
@@ -236,22 +304,33 @@ function App() {
                         </td>
                         <td className="amount">{formatMoney(invoice.amount)}</td>
                         <td>
-                          <div className="payment-cell">
-                            <span
-                              className={`status ${
-                                overdue ? 'overdue' : invoice.status.toLowerCase()
-                              }`}
+                          <span
+                            className={`status ${
+                              overdue ? 'overdue' : invoice.status.toLowerCase()
+                            }`}
+                          >
+                            {overdue ? 'Overdue' : invoice.status}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            className="copy-link-button"
+                            onClick={() => copyPaymentLink(invoice.id)}
+                          >
+                            {copiedInvoiceId === invoice.id
+                              ? 'Link copied'
+                              : 'Copy payment link'}
+                          </button>
+                        </td>
+                        <td>
+                          {invoice.status === 'Paid' && (
+                            <button
+                              className="clear-invoice-button"
+                              onClick={() => clearPaidInvoice(invoice.id)}
                             >
-                              {overdue ? 'Overdue' : invoice.status}
-                            </span>
-
-                            {invoice.status === 'Unpaid' && (
-                              <PayPalCheckoutButton
-                                invoiceId={invoice.id}
-                                onPaid={() => markInvoicePaid(invoice.id)}
-                              />
-                            )}
-                          </div>
+                              Clear
+                            </button>
+                          )}
                         </td>
                       </tr>
                     )
