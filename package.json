@@ -1,0 +1,25 @@
+{
+  "name": "paypal-freelancer-copilot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently -k -n BACKEND,FRONTEND \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RitvikSrenigan/paypal-freelancer-copilot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/RitvikSrenigan/paypal-freelancer-copilot/issues"
+  },
+  "homepage": "https://github.com/RitvikSrenigan/paypal-freelancer-copilot#readme",
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}

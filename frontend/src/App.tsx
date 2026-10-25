@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import ClientInvoicePage from './ClientInvoicePage'
+import Loginpage from './Loginpage'
+import NotificationsPage from './Notifications'
 import './App.css'
 
 type Invoice = {
@@ -11,6 +13,8 @@ type Invoice = {
   status: 'Unpaid' | 'Paid'
   archived?: boolean
 }
+
+type Page = 'dashboard' | 'notifications'
 
 function formatMoney(amount: number) {
   return new Intl.NumberFormat('en-GB', {
@@ -28,8 +32,17 @@ function getLocalDate() {
 }
 
 function App() {
+  const [authenticated, setAuthenticated] = useState(false)
+  const [checkingSession, setCheckingSession] = useState(true)
+  const [loginError, setLoginError] = useState('')
+  const [activePage, setActivePage] = useState<Page>(() =>
+    window.location.pathname === '/notifications'
+      ? 'notifications'
+      : 'dashboard',
+  )
+
   const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loadingInvoices, setLoadingInvoices] = useState(true)
   const [error, setError] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [copiedInvoiceId, setCopiedInvoiceId] = useState('')
@@ -42,26 +55,108 @@ function App() {
   const today = getLocalDate()
   const activeInvoices = invoices.filter((invoice) => !invoice.archived)
 
-  useEffect(() => {
-    async function loadInvoices() {
-      try {
-        const response = await fetch('/api/invoices')
-        if (!response.ok) throw new Error('Could not load invoices.')
+  const paymentPageMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/)
+  const paymentPageId = paymentPageMatch?.[1]
 
-        const data = (await response.json()) as Invoice[]
-        setInvoices(data)
-        setError('')
+  useEffect(() => {
+    function updatePageFromAddressBar() {
+      setActivePage(
+        window.location.pathname === '/notifications'
+          ? 'notifications'
+          : 'dashboard',
+      )
+    }
+
+    window.addEventListener('popstate', updatePageFromAddressBar)
+    return () => window.removeEventListener('popstate', updatePageFromAddressBar)
+  }, [])
+
+  useEffect(() => {
+    // Client payment links do not require the freelancer login.
+    if (window.location.pathname.match(/^\/pay\/[^/]+\/?$/)) {
+      setCheckingSession(false)
+      return
+    }
+
+    let cancelled = false
+
+    async function checkSession() {
+      try {
+        const response = await fetch('/api/auth/me', {
+          credentials: 'include',
+        })
+        const result = await response.json()
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Could not check your login.')
+        }
+
+        if (!cancelled) {
+          setAuthenticated(Boolean(result.authenticated))
+        }
       } catch {
-        setError('Could not connect to the backend. Check that it is running.')
+        if (!cancelled) {
+          setLoginError(
+            'Could not connect to the backend. Check that it is running.',
+          )
+        }
       } finally {
-        setLoading(false)
+        if (!cancelled) setCheckingSession(false)
       }
     }
 
-    loadInvoices()
+    void checkSession()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  // Totals use all invoices, including archived ones, to preserve history.
+  useEffect(() => {
+    if (!authenticated) return
+
+    let cancelled = false
+
+    async function loadInvoices() {
+      setLoadingInvoices(true)
+
+      try {
+        const response = await fetch('/api/invoices', {
+          credentials: 'include',
+        })
+
+        if (response.status === 401) {
+          setAuthenticated(false)
+          setLoginError('Your session ended. Please sign in again.')
+          return
+        }
+
+        const result = await response.json()
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Could not load invoices.')
+        }
+
+        if (!cancelled) {
+          setInvoices(result as Invoice[])
+          setError('')
+        }
+      } catch {
+        if (!cancelled) {
+          setError('Could not connect to the backend. Check that it is running.')
+        }
+      } finally {
+        if (!cancelled) setLoadingInvoices(false)
+      }
+    }
+
+    void loadInvoices()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authenticated])
+
   const totals = useMemo(() => {
     const unpaidInvoices = invoices.filter(
       (invoice) => invoice.status === 'Unpaid',
@@ -80,6 +175,58 @@ function App() {
     }
   }, [invoices, today])
 
+  async function handleLogin(email: string, password: string) {
+    setLoginError('')
+
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password }),
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Could not sign in.')
+      }
+
+      setAuthenticated(true)
+      setLoginError('')
+    } catch (err) {
+      setLoginError(
+        err instanceof Error
+          ? err.message
+          : 'Could not connect to the backend. Check that it is running.',
+      )
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      })
+    } finally {
+      setAuthenticated(false)
+      setInvoices([])
+      setLoginError('')
+      setActivePage('dashboard')
+      window.history.pushState({}, '', '/dashboard')
+    }
+  }
+
+  function navigateTo(page: Page) {
+    setActivePage(page)
+    window.history.pushState(
+      {},
+      '',
+      page === 'notifications' ? '/notifications' : '/dashboard',
+    )
+  }
+
   async function createInvoice(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -88,6 +235,7 @@ function App() {
       const response = await fetch('/api/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           client: client.trim(),
           description: description.trim(),
@@ -97,6 +245,12 @@ function App() {
       })
 
       const result = await response.json()
+
+      if (response.status === 401) {
+        setAuthenticated(false)
+        setLoginError('Your session ended. Please sign in again.')
+        return
+      }
 
       if (!response.ok) {
         throw new Error(result.error || 'Could not save invoice.')
@@ -130,6 +284,7 @@ function App() {
     const confirmed = window.confirm(
       'Clear this paid invoice from the list? It will remain in your saved records and totals.',
     )
+
     if (!confirmed) return
 
     setError('')
@@ -137,9 +292,19 @@ function App() {
     try {
       const response = await fetch(
         `/api/invoices/${encodeURIComponent(invoiceId)}/archive`,
-        { method: 'PATCH' },
+        {
+          method: 'PATCH',
+          credentials: 'include',
+        },
       )
+
       const result = await response.json()
+
+      if (response.status === 401) {
+        setAuthenticated(false)
+        setLoginError('Your session ended. Please sign in again.')
+        return
+      }
 
       if (!response.ok) {
         throw new Error(result.error || 'Could not clear invoice.')
@@ -147,9 +312,7 @@ function App() {
 
       setInvoices((current) =>
         current.map((invoice) =>
-          invoice.id === invoiceId
-            ? { ...invoice, archived: true }
-            : invoice,
+          invoice.id === invoiceId ? { ...invoice, archived: true } : invoice,
         ),
       )
     } catch (err) {
@@ -157,28 +320,63 @@ function App() {
     }
   }
 
-  const paymentPageMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/)
-  const paymentPageId = paymentPageMatch?.[1]
-
   if (paymentPageId) {
-    return <ClientInvoicePage invoiceId={decodeURIComponent(paymentPageId)} />
+    return (
+      <ClientInvoicePage invoiceId={decodeURIComponent(paymentPageId)} />
+    )
+  }
+
+  if (checkingSession) {
+    return (
+      <main className="login-page">
+        <section className="login-card">
+          <p>Checking your session…</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (!authenticated) {
+    return <Loginpage onLogin={handleLogin} error={loginError} />
   }
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="/dashboard">
+        <a
+          className="brand"
+          href="/dashboard"
+          onClick={(event) => {
+            event.preventDefault()
+            navigateTo('dashboard')
+          }}
+        >
           <span className="brand-icon">F</span>
           <span>PayPal Freelancer Copilot</span>
         </a>
 
         <p className="sidebar-label">WORKSPACE</p>
-        <a className="nav-link active" href="/dashboard">
+
+        <a
+          className={`nav-link ${activePage === 'dashboard' ? 'active' : ''}`}
+          href="/dashboard"
+          onClick={(event) => {
+            event.preventDefault()
+            navigateTo('dashboard')
+          }}
+        >
           <span>▦</span> Overview
         </a>
-        <a className="nav-link" href="/invoices">
-          <span>▤</span> Invoices
-          <b>{activeInvoices.length}</b>
+
+        <a
+          className={`nav-link ${activePage === 'notifications' ? 'active' : ''}`}
+          href="/notifications"
+          onClick={(event) => {
+            event.preventDefault()
+            navigateTo('notifications')
+          }}
+        >
+          <span>▤</span> Notifications
         </a>
 
         <div className="sidebar-note">
@@ -188,167 +386,202 @@ function App() {
         </div>
       </aside>
 
-      <main className="main-content" id="dashboard">
+      <main className="main-content">
         <header className="topbar">
           <div className="breadcrumb">
-            Workspace <span>/</span> Overview
+            Workspace <span>/</span>
+            {activePage === 'dashboard' ? 'Overview' : 'Notifications'}
           </div>
-          <span className="sandbox"><i /> Sandbox mode</span>
+
+          <div className="topbar-actions">
+            <span className="sandbox"><i /> Sandbox mode</span>
+            <button className="cancel-button" onClick={handleLogout}>
+              Log out
+            </button>
+          </div>
         </header>
 
         <section className="welcome">
           <div>
             <p className="eyebrow"><i /> YOUR FINANCE, IN FOCUS</p>
-            <h1>Invoice overview</h1>
+            <h1>
+              {activePage === 'dashboard' ? 'Invoice overview' : 'Notifications'}
+            </h1>
             <p className="welcome-subtitle">
-              Create invoices and keep an eye on your payments.
+              {activePage === 'dashboard'
+                ? 'Create invoices and keep an eye on your payments.'
+                : 'Upcoming invoice due dates and reminder drafts.'}
             </p>
           </div>
         </section>
 
-        {error && <p className="error-message" role="alert">{error}</p>}
+        {error && (
+          <p className="error-message" role="alert">
+            {error}
+          </p>
+        )}
 
-        <section className="metrics" aria-label="Invoice summary">
-          <article className="metric-card">
-            <div className="metric-heading">
-              <span>Total invoiced</span>
-              <b className="metric-icon purple">↗</b>
-            </div>
-            <strong>{formatMoney(totals.invoiced)}</strong>
-            <small>{invoices.length} invoice{invoices.length === 1 ? '' : 's'}</small>
-          </article>
+        {activePage === 'notifications' ? (
+          <NotificationsPage invoices={activeInvoices} />
+        ) : (
+          <>
+            <section className="metrics" aria-label="Invoice summary">
+              <article className="metric-card">
+                <div className="metric-heading">
+                  <span>Total invoiced</span>
+                  <b className="metric-icon purple">↗</b>
+                </div>
+                <strong>{formatMoney(totals.invoiced)}</strong>
+                <small>
+                  {invoices.length} invoice{invoices.length === 1 ? '' : 's'}
+                </small>
+              </article>
 
-          <article className="metric-card">
-            <div className="metric-heading">
-              <span>Received</span>
-              <b className="metric-icon green">✓</b>
-            </div>
-            <strong>{formatMoney(totals.received)}</strong>
-            <small>Payments confirmed</small>
-          </article>
+              <article className="metric-card">
+                <div className="metric-heading">
+                  <span>Received</span>
+                  <b className="metric-icon green">✓</b>
+                </div>
+                <strong>{formatMoney(totals.received)}</strong>
+                <small>Payments confirmed</small>
+              </article>
 
-          <article className="metric-card">
-            <div className="metric-heading">
-              <span>Outstanding</span>
-              <b className="metric-icon amber">◷</b>
-            </div>
-            <strong>{formatMoney(totals.outstanding)}</strong>
-            <small>Awaiting payment</small>
-          </article>
+              <article className="metric-card">
+                <div className="metric-heading">
+                  <span>Outstanding</span>
+                  <b className="metric-icon amber">◷</b>
+                </div>
+                <strong>{formatMoney(totals.outstanding)}</strong>
+                <small>Awaiting payment</small>
+              </article>
 
-          <article className="metric-card">
-            <div className="metric-heading">
-              <span>Overdue</span>
-              <b className="metric-icon red">!</b>
-            </div>
-            <strong>
-              {totals.overdue}
-              <em> invoice{totals.overdue === 1 ? '' : 's'}</em>
-            </strong>
-            <small>Unpaid past the due date</small>
-          </article>
-        </section>
+              <article className="metric-card">
+                <div className="metric-heading">
+                  <span>Overdue</span>
+                  <b className="metric-icon red">!</b>
+                </div>
+                <strong>
+                  {totals.overdue}
+                  <em> invoice{totals.overdue === 1 ? '' : 's'}</em>
+                </strong>
+                <small>Unpaid past the due date</small>
+              </article>
+            </section>
 
-        <section className="invoice-panel" id="invoices">
-          <div className="panel-heading">
-            <div>
-              <h2>Invoices</h2>
-              <p>Your invoices and their payment status.</p>
-            </div>
-          </div>
+            <section className="invoice-panel" id="invoices">
+              <div className="panel-heading">
+                <div>
+                  <h2>Invoices</h2>
+                  <p>Your invoices and their payment status.</p>
+                </div>
+              </div>
 
-          {loading ? (
-            <div className="empty-state">
-              <p>Loading invoices…</p>
-            </div>
-          ) : activeInvoices.length === 0 ? (
-            <div className="empty-state">
-              <span className="empty-icon">▤</span>
-              <h3>{invoices.length === 0 ? 'No invoices yet' : 'All invoices cleared'}</h3>
-              <p>
-                {invoices.length === 0
-                  ? 'Create your first invoice using the button below.'
-                  : 'Cleared paid invoices remain included in your totals.'}
-              </p>
-            </div>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>INVOICE</th>
-                    <th>CLIENT</th>
-                    <th>DESCRIPTION</th>
-                    <th>DUE DATE</th>
-                    <th>AMOUNT</th>
-                    <th>STATUS</th>
-                    <th>CLIENT LINK</th>
-                    <th>ACTIONS</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeInvoices.map((invoice) => {
-                    const overdue =
-                      invoice.status === 'Unpaid' && invoice.dueDate < today
-
-                    return (
-                      <tr key={invoice.id}>
-                        <td className="invoice-id">{invoice.id}</td>
-                        <td className="client-name">{invoice.client}</td>
-                        <td className="description">{invoice.description}</td>
-                        <td className={overdue ? 'overdue-date' : ''}>
-                          {new Date(`${invoice.dueDate}T12:00:00`).toLocaleDateString(
-                            'en-GB',
-                            { day: 'numeric', month: 'short', year: 'numeric' },
-                          )}
-                        </td>
-                        <td className="amount">{formatMoney(invoice.amount)}</td>
-                        <td>
-                          <span
-                            className={`status ${
-                              overdue ? 'overdue' : invoice.status.toLowerCase()
-                            }`}
-                          >
-                            {overdue ? 'Overdue' : invoice.status}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            className="copy-link-button"
-                            onClick={() => copyPaymentLink(invoice.id)}
-                          >
-                            {copiedInvoiceId === invoice.id
-                              ? 'Link copied'
-                              : 'Copy payment link'}
-                          </button>
-                        </td>
-                        <td>
-                          {invoice.status === 'Paid' && (
-                            <button
-                              className="clear-invoice-button"
-                              onClick={() => clearPaidInvoice(invoice.id)}
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </td>
+              {loadingInvoices ? (
+                <div className="empty-state">
+                  <p>Loading invoices…</p>
+                </div>
+              ) : activeInvoices.length === 0 ? (
+                <div className="empty-state">
+                  <span className="empty-icon">▤</span>
+                  <h3>
+                    {invoices.length === 0
+                      ? 'No invoices yet'
+                      : 'All invoices cleared'}
+                  </h3>
+                  <p>
+                    {invoices.length === 0
+                      ? 'Create your first invoice using the button below.'
+                      : 'Cleared paid invoices remain included in your totals.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>INVOICE</th>
+                        <th>CLIENT</th>
+                        <th>DESCRIPTION</th>
+                        <th>DUE DATE</th>
+                        <th>AMOUNT</th>
+                        <th>STATUS</th>
+                        <th>CLIENT LINK</th>
+                        <th>ACTIONS</th>
                       </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                    </thead>
+                    <tbody>
+                      {activeInvoices.map((invoice) => {
+                        const overdue =
+                          invoice.status === 'Unpaid' &&
+                          invoice.dueDate < today
 
-          <div className="panel-create-action">
-            <button
-              className="primary-button"
-              onClick={() => setShowForm(true)}
-            >
-              + Create invoice
-            </button>
-          </div>
-        </section>
+                        return (
+                          <tr key={invoice.id}>
+                            <td className="invoice-id">{invoice.id}</td>
+                            <td className="client-name">{invoice.client}</td>
+                            <td className="description">{invoice.description}</td>
+                            <td className={overdue ? 'overdue-date' : ''}>
+                              {new Date(
+                                `${invoice.dueDate}T12:00:00`,
+                              ).toLocaleDateString('en-GB', {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric',
+                              })}
+                            </td>
+                            <td className="amount">
+                              {formatMoney(invoice.amount)}
+                            </td>
+                            <td>
+                              <span
+                                className={`status ${
+                                  overdue
+                                    ? 'overdue'
+                                    : invoice.status.toLowerCase()
+                                }`}
+                              >
+                                {overdue ? 'Overdue' : invoice.status}
+                              </span>
+                            </td>
+                            <td>
+                              <button
+                                className="copy-link-button"
+                                onClick={() => copyPaymentLink(invoice.id)}
+                              >
+                                {copiedInvoiceId === invoice.id
+                                  ? 'Link copied'
+                                  : 'Copy payment link'}
+                              </button>
+                            </td>
+                            <td>
+                              {invoice.status === 'Paid' && (
+                                <button
+                                  className="clear-invoice-button"
+                                  onClick={() => clearPaidInvoice(invoice.id)}
+                                >
+                                  Clear
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="panel-create-action">
+                <button
+                  className="primary-button"
+                  onClick={() => setShowForm(true)}
+                >
+                  + Create invoice
+                </button>
+              </div>
+            </section>
+          </>
+        )}
       </main>
 
       {showForm && (
