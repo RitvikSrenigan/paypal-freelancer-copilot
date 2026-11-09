@@ -126,8 +126,10 @@ function App() {
         })
 
         if (response.status === 401) {
-          setAuthenticated(false)
-          setLoginError('Your session ended. Please sign in again.')
+          if (!cancelled) {
+            setAuthenticated(false)
+            setLoginError('Your session ended. Please sign in again.')
+          }
           return
         }
 
@@ -410,7 +412,7 @@ function App() {
             <p className="welcome-subtitle">
               {activePage === 'dashboard'
                 ? 'Create invoices and keep an eye on your payments.'
-                : 'Upcoming invoice due dates and reminder drafts.'}
+                : 'Upcoming invoice due dates and AI reminder drafts.'}
             </p>
           </div>
         </section>

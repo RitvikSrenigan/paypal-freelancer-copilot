@@ -3,6 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import session from 'express-session'
 import { rateLimit } from 'express-rate-limit'
+import OpenAI from 'openai'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -51,6 +52,10 @@ type Invoice = {
   archived?: boolean
 }
 
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null
+
 const paypalClientId = process.env.PAYPAL_CLIENT_ID
 const paypalClientSecret = process.env.PAYPAL_CLIENT_SECRET
 
@@ -75,10 +80,9 @@ app.use(
     credentials: true,
   }),
 )
-app.use(express.json())
+app.use(express.json({ limit: '10kb' }))
 
-// This session store is for local development only.
-// Choose a persistent session store before deploying the app.
+// Local development session store. Use a persistent store before deployment.
 app.use(
   session({
     name: 'freelancer.sid',
@@ -111,6 +115,13 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+const aiDraftLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
 const requireFreelancerLogin: RequestHandler = (req, res, next) => {
   if (!req.session.freelancerLoggedIn) {
     res.status(401).json({ error: 'Please log in.' })
@@ -136,7 +147,6 @@ app.post('/api/auth/login', loginLimiter, (req, res, next) => {
     return
   }
 
-  // Give the signed-in user a new session ID after successful login.
   req.session.regenerate((error) => {
     if (error) {
       next(error)
@@ -201,7 +211,8 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'OK', message: 'Freelancer Copilot Backend is active!' })
 })
 
-// Public client invoice page: it returns only the fields needed to display/pay.
+// Public client invoice page. The separate link-verification feature is not
+// included in this version.
 app.get('/api/public/invoices/:id', async (req, res) => {
   try {
     const invoices = await readInvoices()
@@ -225,7 +236,7 @@ app.get('/api/public/invoices/:id', async (req, res) => {
   }
 })
 
-// Everything under /api/invoices is for the signed-in freelancer.
+// Freelancer invoice routes require a signed-in session.
 app.use('/api/invoices', requireFreelancerLogin)
 
 app.get('/api/invoices', async (_req, res) => {
@@ -296,6 +307,97 @@ app.patch('/api/invoices/:id/archive', async (req, res) => {
     res.status(500).json({ error: 'Could not clear the invoice.' })
   }
 })
+
+app.post(
+  '/api/ai/reminder-draft',
+  requireFreelancerLogin,
+  aiDraftLimiter,
+  async (req, res) => {
+    const { invoiceId, tone, timing } = req.body ?? {}
+    const allowedTones = ['friendly', 'professional', 'firm']
+    const allowedTimings = ['in 3 days', 'tomorrow', 'today', 'overdue']
+
+    if (
+      typeof invoiceId !== 'string' ||
+      typeof tone !== 'string' ||
+      !allowedTones.includes(tone) ||
+      typeof timing !== 'string' ||
+      !allowedTimings.includes(timing)
+    ) {
+      res.status(400).json({ error: 'Invoice, tone, or timing is invalid.' })
+      return
+    }
+
+    if (!openai) {
+      res.status(503).json({ error: 'AI drafting is not configured.' })
+      return
+    }
+
+    try {
+      const invoices = await readInvoices()
+      const invoice = invoices.find((item) => item.id === invoiceId)
+
+      if (!invoice) {
+        res.status(404).json({ error: 'Invoice not found.' })
+        return
+      }
+
+      if (invoice.status !== 'Unpaid' || invoice.archived) {
+        res.status(409).json({
+          error: 'A reminder can only be drafted for an active unpaid invoice.',
+        })
+        return
+      }
+
+      const formattedDueDate = new Date(
+        `${invoice.dueDate}T12:00:00`,
+      ).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+
+      const response = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || 'gpt-6-luna',
+        reasoning: { effort: 'none' },
+        instructions: [ `
+          Write a polite payment reminder email.
+          Use a ${tone} tone.
+          Make it 70–100 words.
+          Include a greeting, the invoice amount, description, due date, a polite request for payment, an offer to answer questions, and a closing.
+          Use only the invoice details provided; do not invent facts.
+          Start with [[GREETING]] so the app can insert the client's name.
+          Do not use a subject line or markdown.
+          `,
+        ].join(' '),
+        input: [
+          `Invoice description: ${invoice.description}`,
+          `Amount: GBP ${invoice.amount.toFixed(2)}`,
+          `Due date: ${formattedDueDate}`,
+        ].join('\n'),
+        max_output_tokens: 400,
+      })
+
+      const generatedText = response.output_text.trim()
+
+      if (!generatedText) {
+        res.status(502).json({ error: 'AI did not return a draft.' })
+        return
+      }
+
+      const greeting = `Hi ${invoice.client},`
+      const draft = generatedText.startsWith('[[GREETING]]')
+        ? generatedText.replace('[[GREETING]]', greeting)
+        : `${greeting}\n\n${generatedText}`
+
+      res.json({ draft })
+    } catch {
+      res.status(502).json({
+        error: 'Could not generate a reminder draft. Try again shortly.',
+      })
+    }
+  },
+)
 
 app.get('/api/paypal/client-id', (_req, res) => {
   if (!paypalClientId) {
